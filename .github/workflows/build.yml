@@ -23,6 +23,10 @@ jobs:
         mkdir -p app/src/main/java/com/test/game
         mkdir -p app/src/main/res/values
 
+        # gradle.properties (En Hayati Kisim - AndroidX Ayari)
+        echo "android.useAndroidX=true" > gradle.properties
+        echo "android.enableJetifier=true" >> gradle.properties
+
         cat << 'EOF' > settings.gradle.kts
         pluginManagement {
             repositories {
@@ -105,7 +109,7 @@ jobs:
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 val text = TextView(this)
-                text.text = "FlyPro Basariyla Calisti!"
+                text.text = "FlyPro Kesin Basarili!"
                 text.textSize = 24f
                 setContentView(text)
             }
