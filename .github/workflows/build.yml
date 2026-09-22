@@ -25,6 +25,7 @@ jobs:
         mkdir -p app/src/main/java/com/flypro/game/ui/components
         mkdir -p app/src/main/java/com/flypro/game/ui/screens
         mkdir -p app/src/main/java/com/flypro/game/theme
+        mkdir -p app/src/main/res/values
 
         echo "android.useAndroidX=true" > gradle.properties
         echo "android.enableJetifier=true" >> gradle.properties
@@ -94,6 +95,14 @@ jobs:
         }
         EOF
 
+        cat << 'EOF' > app/src/main/res/values/styles.xml
+        <?xml version="1.0" encoding="utf-8"?>
+        <resources>
+            <style name="Theme.FlyPro" parent="android:Theme.Material.Light.NoActionBar">
+            </style>
+        </resources>
+        EOF
+
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -101,7 +110,7 @@ jobs:
                 android:allowBackup="true"
                 android:label="FlyPro"
                 android:supportsRtl="true"
-                android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
+                android:theme="@style/Theme.FlyPro">
                 <activity
                     android:name=".MainActivity"
                     android:exported="true"
