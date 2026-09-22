@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Pro Flight Sim APK
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Create Full FlyPro Project
+    - name: Create Pro Flight Sim Project Structure
       run: |
         mkdir -p app/src/main/java/com/flypro/game/data
         mkdir -p app/src/main/java/com/flypro/game/physics
@@ -45,7 +45,7 @@ jobs:
                 mavenCentral()
             }
         }
-        rootProject.name = "FlyPro"
+        rootProject.name = "FlyProSim"
         include(":app")
         EOF
 
@@ -68,8 +68,8 @@ jobs:
                 applicationId = "com.flypro.game"
                 minSdk = 24
                 targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
+                versionCode = 2
+                versionName = "2.0"
                 vectorDrawables { useSupportLibrary = true }
             }
             compileOptions {
@@ -108,7 +108,7 @@ jobs:
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <application
                 android:allowBackup="true"
-                android:label="FlyPro"
+                android:label="Flight Simulator 2D Pro"
                 android:supportsRtl="true"
                 android:theme="@style/Theme.FlyPro">
                 <activity
@@ -127,19 +127,33 @@ jobs:
 
         cat << 'EOF' > app/src/main/java/com/flypro/game/data/GameData.kt
         package com.flypro.game.data
-        data class Aircraft(val id: String, val name: String, val type: String, val price: Int, val maxSpeed: Float, val weight: Float, val fuelCapacity: Float, val enginePower: Float, val passengerCapacity: Int, val stallSpeed: Float, var isUnlocked: Boolean = false)
-        data class Airport(val name: String, val code: String, val locationX: Float, val locationY: Float)
+        data class Aircraft(
+            val id: String,
+            val name: String,
+            val type: String,
+            val price: Int,
+            val maxSpeed: Float,
+            val baseWeight: Float,
+            val fuelCapacity: Float,
+            val enginePower: Float,
+            val stallSpeed: Float,
+            var isUnlocked: Boolean = false
+        )
+        data class Airport(val name: String, val code: String, val distanceX: Float)
+
         object GameDatabase {
             val aircraftList = mutableListOf(
-                Aircraft("cessna172", "Cessna 172 Sky", "Small Propeller", 0, 140f, 1100f, 200f, 180f, 3, 45f, true),
-                Aircraft("kingair", "King Air 350", "Regional Turboprop", 45000, 310f, 4500f, 800f, 750f, 9, 75f, false),
-                Aircraft("citation", "Citation X", "Business Jet", 120000, 525f, 14500f, 2500f, 2200f, 12, 100f, false),
-                Aircraft("boeing737", "Boeing 737-800", "Passenger Jet", 350000, 480f, 41000f, 15000f, 8500f, 160, 115f, false)
+                Aircraft("cessna172", "Cessna 172 Skyhawk", "Light Prop", 0, 140f, 1100f, 200f, 160f, 42f, true),
+                Aircraft("kingair", "King Air 350i", "Twin Turboprop", 45000, 310f, 4500f, 800f, 750f, 70f, false),
+                Aircraft("citation", "Citation X", "Business Jet", 120000, 525f, 14500f, 2500f, 2200f, 95f, false),
+                Aircraft("boeing737", "Boeing 737-800", "Airliner", 350000, 480f, 41000f, 12000f, 8500f, 110f, false)
             )
             val airportList = listOf(
-                Airport("Berlin Brandenburg", "BER", 1000f, 500f),
-                Airport("Frankfurt Main", "FRA", 3500f, 1200f),
-                Airport("Munich Airport", "MUC", 6000f, 2500f)
+                Airport("Berlin Brandenburg", "BER", 0f),
+                Airport("Frankfurt Main", "FRA", 3500f),
+                Airport("Munich International", "MUC", 7000f),
+                Airport("London Heathrow", "LHR", 11500f),
+                Airport("Paris Charles de Gaulle", "CDG", 15000f)
             )
         }
         EOF
@@ -149,8 +163,8 @@ jobs:
         import android.content.Context
         import android.content.SharedPreferences
         class SaveManager(context: Context) {
-            private val prefs: SharedPreferences = context.getSharedPreferences("FlyProPrefs", Context.MODE_PRIVATE)
-            fun getMoney(): Int = prefs.getInt("money", 5000)
+            private val prefs: SharedPreferences = context.getSharedPreferences("FlyProSimPrefs", Context.MODE_PRIVATE)
+            fun getMoney(): Int = prefs.getInt("money", 10000)
             fun saveMoney(money: Int) = prefs.edit().putInt("money", money).apply()
             fun getSelectedAircraftId(): String = prefs.getString("selected_aircraft", "cessna172") ?: "cessna172"
             fun saveSelectedAircraftId(id: String) = prefs.edit().putString("selected_aircraft", id).apply()
@@ -164,44 +178,92 @@ jobs:
 
         cat << 'EOF' > app/src/main/java/com/flypro/game/physics/FlightPhysics.kt
         package com.flypro.game.physics
-        class FlightPhysics(val aircraft: com.flypro.game.data.Aircraft) {
+        import com.flypro.game.data.Aircraft
+        import kotlin.math.abs
+
+        class FlightPhysics(val aircraft: Aircraft, val cargoWeight: Float) {
             var posX = 0f
-            var posY = 1000f
-            var airspeed = 60f
-            var verticalSpeed = 0f
-            var pitch = 0f
-            var throttle = 50f
-            var flaps = 0
+            var posY = 2000f // Başlangıç irtifası (feet)
+            var airspeed = 80f // Knot
+            var verticalSpeed = 0f // Feet per minute
+            var pitch = 2f // Derece
+            var throttle = 60f // Yüzde
+            var flaps = 0 // 0, 1, 2
             var gearDown = true
+            val totalWeight = aircraft.baseWeight + cargoWeight
             var fuel = aircraft.fuelCapacity
-            var engineTemp = 70f
+            
             var isStalled = false
             var isOverspeed = false
-            var engineFailed = false
-            fun update(deltaTime: Float) {
-                if (fuel <= 0 || engineFailed) { throttle = 0f }
-                val thrust = (throttle / 100f) * aircraft.enginePower * 2.0f
-                val drag = (airspeed * airspeed * 0.005f) + (if (gearDown) 30f else 0f) + (flaps * 15f)
-                val acceleration = (thrust - drag) / (aircraft.weight * 0.001f)
-                airspeed += acceleration * deltaTime * 10f
+            var isGrounded = false
+            var landingScore = -1f
+
+            fun update(dt: Float) {
+                if (fuel <= 0f) {
+                    throttle = 0f
+                }
+
+                // İtme ve Direnç Hesaplamaları (Gerçekçi Fizik)
+                val thrust = (throttle / 100f) * aircraft.enginePower * 3.0f
+                val dragFactor = 0.002f + (if (gearDown) 0.0015f else 0f) + (flaps * 0.001f)
+                val drag = airspeed * airspeed * dragFactor
+                
+                val weightEffect = totalWeight / 2000f
+                val netAcceleration = (thrust - drag) / weightEffect
+                
+                airspeed += netAcceleration * dt
                 if (airspeed < 0f) airspeed = 0f
-                isStalled = airspeed < aircraft.stallSpeed && posY > 50f
+
+                // Stall ve Aşırı Hız Kontrolü
+                isStalled = airspeed < aircraft.stallSpeed && posY > 15f
                 isOverspeed = airspeed > aircraft.maxSpeed
-                if (isStalled) { verticalSpeed = -800f; pitch = -15f }
-                else { verticalSpeed = (pitch * 20f) + ((airspeed - 50f) * 2f) }
-                posY += verticalSpeed * (deltaTime / 60f)
-                if (posY < 0f) { posY = 0f; verticalSpeed = 0f; pitch = 0f }
-                if (throttle > 0f) {
-                    fuel -= (throttle / 100f) * 0.5f * deltaTime
+
+                if (isStalled) {
+                    verticalSpeed = -1200f
+                    pitch = -10f
+                } else {
+                    // Pitch ve hücum açısına göre dikey hız
+                    val lift = (airspeed * 0.8f) - (weightEffect * 5f)
+                    verticalSpeed = (pitch * 25f) + (lift - 50f)
+                }
+
+                posY += verticalSpeed * (dt / 60f)
+
+                // Yere İniş Kontrolü
+                if (posY <= 10f) {
+                    posY = 0f
+                    isGrounded = true
+                    val touchdownVS = abs(verticalSpeed)
+                    if (landingScore < 0f) {
+                        landingScore = when {
+                            touchdownVS < 150f -> 100f // Mükemmel iniş
+                            touchdownVS < 350f -> 75f  // Normal iniş
+                            touchdownVS < 600f -> 40f  // Sert iniş
+                            else -> 10f                // Kaza / Hasar
+                        }
+                    }
+                    verticalSpeed = 0f
+                    pitch = 0f
+                    airspeed = maxOf(0f, airspeed - 20f * dt)
+                } else {
+                    isGrounded = false
+                }
+
+                // Yakıt Tüketimi
+                if (throttle > 0f && !isGrounded) {
+                    fuel -= (throttle / 100f) * 0.3f * dt
                     if (fuel < 0f) fuel = 0f
-                    engineTemp = 70f + (throttle * 0.8f)
-                } else { engineTemp = maxOf(25f, engineTemp - 5f * deltaTime) }
-                posX += (airspeed * 1.5f) * deltaTime
+                }
+
+                // Yatay İlerleme (Mesafe)
+                if (!isGrounded || airspeed > 20f) {
+                    posX += airspeed * dt * 1.2f
+                }
             }
         }
         EOF
 
-        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/components/CanvasElements.kt
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/components/FlightInstruments.kt
         package com.flypro.game.ui.components
         import androidx.compose.foundation.Canvas
         import androidx.compose.foundation.layout.fillMaxSize
@@ -210,16 +272,34 @@ jobs:
         import androidx.compose.ui.geometry.Offset
         import androidx.compose.ui.graphics.Color
         import androidx.compose.ui.graphics.drawscope.rotate
+        import androidx.compose.ui.graphics.drawscope.Stroke
+
         @Composable
-        fun FlightWorldCanvas(posX: Float, posY: Float, pitch: Float) {
+        fun FlightWorldCanvas(posX: Float, posY: Float, pitch: Float, isGrounded: Boolean) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRect(color = Color(0xFF1a237e))
-                val groundY = size.height * 0.6f
-                drawRect(color = Color(0xFF33691e), topLeft = Offset(0f, groundY), size = androidx.compose.ui.geometry.Size(size.width, size.height - groundY))
-                val center = Offset(size.width / 2f, groundY - (posY * 0.2f).coerceIn(0f, groundY - 100f))
-                rotate(pitch, pivot = center) {
-                    drawCircle(color = Color.Cyan, radius = 16f, center = center)
-                    drawRect(color = Color.White, topLeft = Offset(center.x - 30f, center.y - 4f), size = androidx.compose.ui.geometry.Size(60f, 8f))
+                // Gökyüzü ve Atmosfer Gradyanı
+                drawRect(color = Color(0xFF0d47a1))
+
+                val groundY = size.height * 0.75f
+                // Çim / Zemin
+                drawRect(color = Color(0xFF2e7d32), topLeft = Offset(0f, groundY), size = androidx.compose.ui.geometry.Size(size.width, size.height - groundY))
+                
+                // Pist Çizgileri (Görsel Zenginlik)
+                if (posX in 3000f..10000f) {
+                    drawRect(color = Color.DarkGray, topLeft = Offset(0f, groundY - 5f), size = androidx.compose.ui.geometry.Size(size.width, 10f))
+                    drawRect(color = Color.White, topLeft = Offset(size.width / 2f - 40f, groundY - 2f), size = androidx.compose.ui.geometry.Size(80f, 4f))
+                }
+
+                // Uçak Temsili Çizimi (Yapay Ufuk ve Uçak)
+                val planeCenter = Offset(size.width / 2f, groundY - (posY * 0.15f).coerceIn(0f, groundY - 80f))
+                
+                rotate(pitch, pivot = planeCenter) {
+                    // Gövde
+                    drawRect(color = Color.LightGray, topLeft = Offset(planeCenter.x - 35f, planeCenter.y - 6f), size = androidx.compose.ui.geometry.Size(70f, 12f))
+                    // Kanat
+                    drawRect(color = Color.White, topLeft = Offset(planeCenter.x - 10f, planeCenter.y - 25f), size = androidx.compose.ui.geometry.Size(20f, 50f))
+                    // Burun
+                    drawCircle(color = Color.Red, radius: 8f, center = Offset(planeCenter.x + 35f, planeCenter.y))
                 }
             }
         }
@@ -236,17 +316,15 @@ jobs:
         import androidx.compose.ui.unit.dp
         import androidx.compose.ui.unit.sp
         @Composable
-        fun MainMenuScreen(onPlayClick: () -> Unit, onHangarClick: () -> Unit, onSettingsClick: () -> Unit) {
+        fun MainMenuScreen(onPlayClick: () -> Unit, onHangarClick: () -> Unit) {
             Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("FLYPRO", fontSize = 42.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    Text("Advanced 2D Flight Simulator", fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
-                    Spacer(modifier = Modifier.height(32.dp))
-                    Button(onClick = onPlayClick, modifier = Modifier.width(240.dp).height(50.dp)) { Text("FLY NOW", fontSize = 18.sp) }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(onClick = onHangarClick, modifier = Modifier.width(240.dp).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("HANGAR / SHOP", fontSize = 18.sp) }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedButton(onClick = onSettingsClick, modifier = Modifier.width(240.dp).height(50.dp)) { Text("SETTINGS", fontSize = 18.sp) }
+                    Text("FLIGHT SIMULATOR 2D", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("Pro Aviation Edition", fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                    Spacer(modifier = Modifier.height(40.dp))
+                    Button(onClick = onPlayClick, modifier = Modifier.width(260.dp).height(55.dp)) { Text("START FLIGHT", fontSize = 18.sp) }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(onClick = onHangarClick, modifier = Modifier.width(260.dp).height(55.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("HANGAR & FLEET", fontSize = 18.sp) }
                 }
             }
         }
@@ -272,24 +350,25 @@ jobs:
             Surface(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Button(onClick = onBack) { Text("Back") }
-                        Text("Hangar & Aircraft Shop", fontSize = 20.sp)
-                        Text("Money: $money $", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                        Button(onClick = onBack) { Text("Main Menu") }
+                        Text("Aviation Hangar", fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
+                        Text("Balance: $money $", fontSize = 16.sp)
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(GameDatabase.aircraftList) { aircraft ->
                             val isUnlocked = saveManager.isAircraftUnlocked(aircraft.id)
                             val isSelected = selectedId == aircraft.id
-                            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                                 Column(modifier = Modifier.padding(16.dp)) {
                                     Text(aircraft.name, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
-                                    Text("Type: ${aircraft.type} | Max Speed: ${aircraft.maxSpeed} kts")
-                                    Text("Engine Power: ${aircraft.enginePower} HP | Passengers: ${aircraft.passengerCapacity}")
+                                    Text("Class: ${aircraft.type} | Max Speed: ${aircraft.maxSpeed} kts | Power: ${aircraft.enginePower} HP")
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                         if (isUnlocked) {
-                                            Button(onClick = { selectedId = aircraft.id; saveManager.saveSelectedAircraftId(aircraft.id) }, enabled = !isSelected) { Text(if (isSelected) "Selected" else "Select") }
+                                            Button(onClick = { selectedId = aircraft.id; saveManager.saveSelectedAircraftId(aircraft.id) }, enabled = !isSelected) {
+                                                Text(if (isSelected) "Active Aircraft" else "Select")
+                                            }
                                         } else {
                                             Button(onClick = {
                                                 if (money >= aircraft.price) {
@@ -297,7 +376,7 @@ jobs:
                                                     saveManager.saveMoney(money)
                                                     saveManager.unlockAircraft(aircraft.id)
                                                 }
-                                            }) { Text("Buy (${aircraft.price} $)") }
+                                            }) { Text("Purchase (${aircraft.price} $)") }
                                         }
                                     }
                                 }
@@ -320,23 +399,30 @@ jobs:
         import androidx.compose.ui.unit.sp
         import com.flypro.game.data.GameDatabase
         @Composable
-        fun FlightSetupScreen(onStartFlight: (departure: String, destination: String) -> Unit, onBack: () -> Unit) {
+        fun FlightSetupScreen(onStartFlight: (dep: String, dest: String, cargo: Float) -> Unit, onBack: () -> Unit) {
             val airports = GameDatabase.airportList
-            var departureIndex by remember { mutableStateOf(0) }
-            var destinationIndex by remember { mutableStateOf(1) }
+            var depIndex by remember { mutableStateOf(0) }
+            var destIndex by remember { mutableStateOf(1) }
+            var cargoWeight by remember { mutableStateOf(500f) }
+
             Surface(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Flight Planning", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
+                    Text("Flight Plan & Payload", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text("Departure: ${airports[depIndex].name}")
+                    Button(onClick = { depIndex = (depIndex + 1) % airports.size }) { Text("Change Departure") }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Destination: ${airports[destIndex].name}")
+                    Button(onClick = { destIndex = (destIndex + 1) % airports.size }) { Text("Change Destination") }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Cargo & Passengers Weight: ${cargoWeight.toInt()} kg")
+                    Slider(value = cargoWeight, onValueChange = { cargoWeight = it }, valueRange = 100f..3000f, modifier = Modifier.width(280.dp))
                     Spacer(modifier = Modifier.height(24.dp))
-                    Text("Departure: ${airports[departureIndex].name} (${airports[departureIndex].code})")
-                    Button(onClick = { departureIndex = (departureIndex + 1) % airports.size }) { Text("Change Departure") }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Destination: ${airports[destinationIndex].name} (${airports[destinationIndex].code})")
-                    Button(onClick = { destinationIndex = (destinationIndex + 1) % airports.size }) { Text("Change Destination") }
-                    Spacer(modifier = Modifier.height(32.dp))
-                    Button(onClick = { onStartFlight(airports[departureIndex].code, airports[destinationIndex].code) }, modifier = Modifier.width(200.dp).height(50.dp)) { Text("Start Engine & Fly") }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedButton(onClick = onBack) { Text("Back to Menu") }
+                    Button(onClick = { onStartFlight(airports[depIndex].code, airports[destIndex].code, cargoWeight) }, modifier = Modifier.width(240.dp).height(50.dp)) {
+                        Text("Engage & Takeoff", fontSize = 16.sp)
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(onClick = onBack) { Text("Back") }
                 }
             }
         }
@@ -357,68 +443,79 @@ jobs:
         import com.flypro.game.physics.FlightPhysics
         import com.flypro.game.ui.components.FlightWorldCanvas
         import kotlinx.coroutines.delay
+
         @Composable
-        fun GameScreen(saveManager: SaveManager, departure: String, destination: String, onExit: () -> Unit) {
+        fun GameScreen(saveManager: SaveManager, departure: String, destination: String, cargo: Float, onExit: () -> Unit) {
             val aircraftId = saveManager.getSelectedAircraftId()
             val aircraft = GameDatabase.aircraftList.find { it.id == aircraftId } ?: GameDatabase.aircraftList[0]
-            val physics = remember { FlightPhysics(aircraft) }
+            val physics = remember { FlightPhysics(aircraft, cargo) }
+            
+            var missionEnded by remember { mutableStateOf(false) }
+
             LaunchedEffect(Unit) {
-                while (true) {
-                    delay(50L)
-                    physics.update(0.05f)
+                while (!missionEnded) {
+                    delay(40L)
+                    physics.update(0.04f)
+                    if (physics.isGrounded && physics.airspeed <= 1f) {
+                        missionEnded = true
+                        val reward = (physics.landingScore * 10f).toInt() + 500
+                        saveManager.saveMoney(saveManager.getMoney() + reward)
+                    }
                 }
             }
+
             Column(modifier = Modifier.fillMaxSize()) {
-                Box(modifier = Modifier.fillMaxWidth().weight(0.65f)) {
-                    FlightWorldCanvas(posX = physics.posX, posY = physics.posY, pitch = physics.pitch)
+                // Üst Ekran: Uçuş Grafikleri ve Kokpit Görünümü
+                Box(modifier = Modifier.fillMaxWidth().weight(0.6f)) {
+                    FlightWorldCanvas(posX = physics.posX, posY = physics.posY, pitch = physics.pitch, isGrounded = physics.isGrounded)
+                    
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("ROUTE: $departure ➔ $destination", color = Color.White, fontSize = 14.sp)
-                        Text("ALT: ${physics.posY.toInt()} FT", color = Color.Cyan, fontSize = 16.sp)
-                        Text("IAS: ${physics.airspeed.toInt()} KTS", color = Color.Cyan, fontSize = 16.sp)
-                        Text("DEST DISTANCE: ${(120 - (physics.posX / 100f)).coerceAtLeast(0f).toInt()} NM", color = Color.Green, fontSize = 14.sp)
-                        if (physics.isStalled) { Text("STALL WARNING!", color = Color.Red, fontSize = 20.sp) }
+                        Text("ROUTE: $departure ➔ $destination", color = Color.White, fontSize = 13.sp)
+                        Text("ALTITUDE: ${physics.posY.toInt()} FT", color = Color.Cyan, fontSize = 15.sp)
+                        Text("AIRSPEED: ${physics.airspeed.toInt()} KTS", color = Color.Cyan, fontSize = 15.sp)
+                        Text("VERT SPEED: ${physics.verticalSpeed.toInt()} FPM", color = Color.Yellow, fontSize = 13.sp)
+                        Text("FUEL: ${physics.fuel.toInt()} L", color = Color.Green, fontSize = 13.sp)
+                        
+                        if (physics.isStalled) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("⚠️ STALL WARNING! PITCH DOWN!", color = Color.Red, fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                        }
                     }
-                    Button(onClick = onExit, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("Abort") }
+
+                    Button(onClick = onExit, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) {
+                        Text("Abort Flight")
+                    }
+
+                    if (missionEnded) {
+                        Surface(modifier = Modifier.align(Alignment.Center), color = Color.Black.copy(alpha = 0.8f)) {
+                            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("FLIGHT COMPLETED", color = Color.Green, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                Text("Landing Score: ${physics.landingScore.toInt()} / 100", color = Color.White, fontSize = 16.sp)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(onClick = onExit) { Text("Return to Hangar") }
+                            }
+                        }
+                    }
                 }
-                Surface(modifier = Modifier.fillMaxWidth().weight(0.35f), color = Color(0xFF0F141D)) {
+
+                // Alt Ekran: Profesyonel Pilot Kontrolleri
+                Surface(modifier = Modifier.fillMaxWidth().weight(0.4f), color = Color(0xFF111827)) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.SpaceAround) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Throttle: ${physics.throttle.toInt()}%", fontSize = 14.sp)
-                            Text("Pitch: ${physics.pitch.toInt()}°", fontSize = 14.sp)
-                            Text("Fuel: ${physics.fuel.toInt()} L", fontSize = 14.sp)
-                            Text("Flaps: ${physics.flaps}", fontSize = 14.sp)
+                            Text("Throttle: ${physics.throttle.toInt()}%", color = Color.White, fontSize = 13.sp)
+                            Text("Pitch: ${physics.pitch.toInt()}°", color = Color.White, fontSize = 13.sp)
+                            Text("Flaps: Level ${physics.flaps}", color = Color.White, fontSize = 13.sp)
+                            Text("Gear: ${if(physics.gearDown) "DOWN" else "UP"}", color = Color.White, fontSize = 13.sp)
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                             Button(onClick = { if (physics.throttle < 100f) physics.throttle += 10f }) { Text("THR +") }
                             Button(onClick = { if (physics.throttle > 0f) physics.throttle -= 10f }) { Text("THR -") }
-                            Button(onClick = { physics.pitch += 2f }) { Text("PITCH UP") }
-                            Button(onClick = { physics.pitch -= 2f }) { Text("PITCH DOWN") }
+                            Button(onClick = { physics.pitch += 1.5f }) { Text("PITCH UP") }
+                            Button(onClick = { physics.pitch -= 1.5f }) { Text("PITCH DOWN") }
                             Button(onClick = { physics.flaps = (physics.flaps + 1) % 3 }) { Text("FLAPS") }
+                            Button(onClick = { physics.gearDown = !physics.gearDown }) { Text("GEAR") }
                         }
                     }
-                }
-            }
-        }
-        EOF
-
-        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/SettingsScreen.kt
-        package com.flypro.game.ui.screens
-        import androidx.compose.foundation.layout.*
-        import androidx.compose.material3.*
-        import androidx.compose.runtime.Composable
-        import androidx.compose.ui.Alignment
-        import androidx.compose.ui.Modifier
-        import androidx.compose.ui.unit.dp
-        import androidx.compose.ui.unit.sp
-        @Composable
-        fun SettingsScreen(onBack: () -> Unit) {
-            Surface(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Settings", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Text("Sound, Graphics & Controls options will be here.")
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Button(onClick = onBack) { Text("Back to Menu") }
                 }
             }
         }
@@ -430,11 +527,11 @@ jobs:
         import androidx.compose.material3.darkColorScheme
         import androidx.compose.runtime.Composable
         import androidx.compose.ui.graphics.Color
-        private val DarkColorScheme = darkColorScheme(
-            primary = Color(0xFF00E5FF),
+        private val ProDarkColorScheme = darkColorScheme(
+            primary = Color(0xFF00B0FF),
             secondary = Color(0xFF2979FF),
-            background = Color(0xFF0A0E17),
-            surface = Color(0xFF121824),
+            background = Color(0xFF0B0F19),
+            surface = Color(0xFF131B2E),
             onPrimary = Color.Black,
             onSecondary = Color.White,
             onBackground = Color.White,
@@ -442,7 +539,7 @@ jobs:
         )
         @Composable
         fun FlyProTheme(content: @Composable () -> Unit) {
-            MaterialTheme(colorScheme = DarkColorScheme, content = content)
+            MaterialTheme(colorScheme = ProDarkColorScheme, content = content)
         }
         EOF
 
@@ -464,23 +561,22 @@ jobs:
                 composable("menu") {
                     MainMenuScreen(
                         onPlayClick = { navController.navigate("flight_setup") },
-                        onHangarClick = { navController.navigate("hangar") },
-                        onSettingsClick = { navController.navigate("settings") }
+                        onHangarClick = { navController.navigate("hangar") }
                     )
                 }
                 composable("hangar") { HangarScreen(saveManager = saveManager, onBack = { navController.popBackStack() }) }
                 composable("flight_setup") {
                     FlightSetupScreen(
-                        onStartFlight = { dep, dest -> navController.navigate("game/$dep/$dest") },
+                        onStartFlight = { dep, dest, cargo -> navController.navigate("game/$dep/$dest/$cargo") },
                         onBack = { navController.popBackStack() }
                     )
                 }
-                composable("game/{departure}/{destination}") { backStackEntry ->
-                    val departure = backStackEntry.arguments?.getString("departure") ?: "BER"
-                    val destination = backStackEntry.arguments?.getString("destination") ?: "FRA"
-                    GameScreen(saveManager = saveManager, departure = departure, destination = destination, onExit = { navController.popBackStack("menu", inclusive = false) })
+                composable("game/{departure}/{destination}/{cargo}") { backStackEntry ->
+                    val dep = backStackEntry.arguments?.getString("departure") ?: "BER"
+                    val dest = backStackEntry.arguments?.getString("destination") ?: "FRA"
+                    val cargo = backStackEntry.arguments?.getString("cargo")?.toFloatOrNull() ?: 500f
+                    GameScreen(saveManager = saveManager, departure = dep, destination = dest, cargo = cargo, onExit = { navController.popBackStack("menu", inclusive = false) })
                 }
-                composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
             }
         }
         EOF
@@ -519,5 +615,5 @@ jobs:
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: FlyPro-Debug-APK
+        name: FlightSimulator2D-Pro-APK
         path: app/build/outputs/apk/debug/app-debug.apk
