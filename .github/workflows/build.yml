@@ -18,12 +18,14 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Create Project Files
+    - name: Create Full FlyPro Project
       run: |
-        mkdir -p app/src/main/java/com/test/game
-        mkdir -p app/src/main/res/values
+        mkdir -p app/src/main/java/com/flypro/game/data
+        mkdir -p app/src/main/java/com/flypro/game/physics
+        mkdir -p app/src/main/java/com/flypro/game/ui/components
+        mkdir -p app/src/main/java/com/flypro/game/ui/screens
+        mkdir -p app/src/main/java/com/flypro/game/theme
 
-        # gradle.properties (En Hayati Kisim - AndroidX Ayari)
         echo "android.useAndroidX=true" > gradle.properties
         echo "android.enableJetifier=true" >> gradle.properties
 
@@ -59,25 +61,36 @@ jobs:
             id("org.jetbrains.kotlin.android")
         }
         android {
-            namespace = "com.test.game"
+            namespace = "com.flypro.game"
             compileSdk = 34
             defaultConfig {
-                applicationId = "com.test.game"
+                applicationId = "com.flypro.game"
                 minSdk = 24
                 targetSdk = 34
                 versionCode = 1
                 versionName = "1.0"
+                vectorDrawables { useSupportLibrary = true }
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
                 targetCompatibility = JavaVersion.VERSION_17
             }
             kotlinOptions { jvmTarget = "17" }
+            buildFeatures { compose = true }
+            composeOptions { kotlinCompilerExtensionVersion = "1.5.4" }
+            packaging { resources { excludes += "/META-INF/{AL2.0}/{LGPL2.1}" } }
         }
         dependencies {
             implementation("androidx.core:core-ktx:1.12.0")
-            implementation("androidx.appcompat:appcompat:1.6.1")
-            implementation("com.google.android.material:material:1.11.0")
+            implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+            implementation("androidx.activity:activity-compose:1.8.2")
+            implementation(platform("androidx.compose:compose-bom:2023.10.01"))
+            implementation("androidx.compose.ui:ui")
+            implementation("androidx.compose.ui:ui-graphics")
+            implementation("androidx.compose.ui:ui-tooling-preview")
+            implementation("androidx.compose.material3:material3")
+            implementation("androidx.navigation:navigation-compose:2.7.6")
+            implementation("androidx.gson:gson:2.10.1")
         }
         EOF
 
@@ -85,11 +98,15 @@ jobs:
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <application
-                android:label="FlyPro Test"
-                android:theme="@style/Theme.MaterialComponents.DayNight.DarkActionBar">
+                android:allowBackup="true"
+                android:label="FlyPro"
+                android:supportsRtl="true"
+                android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar">
                 <activity
                     android:name=".MainActivity"
-                    android:exported="true">
+                    android:exported="true"
+                    android:screenOrientation="landscape"
+                    android:configChanges="orientation|screenSize|keyboardHidden">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
                         <category android:name="android.intent.category.LAUNCHER" />
@@ -99,19 +116,378 @@ jobs:
         </manifest>
         EOF
 
-        cat << 'EOF' > app/src/main/java/com/test/game/MainActivity.kt
-        package com.test.game
-        import android.os.Bundle
-        import android.widget.TextView
-        import androidx.appcompat.app.AppCompatActivity
+        cat << 'EOF' > app/src/main/java/com/flypro/game/data/GameData.kt
+        package com.flypro.game.data
+        data class Aircraft(val id: String, val name: String, val type: String, val price: Int, val maxSpeed: Float, val weight: Float, val fuelCapacity: Float, val enginePower: Float, val passengerCapacity: Int, val stallSpeed: Float, var isUnlocked: Boolean = false)
+        data class Airport(val name: String, val code: String, val locationX: Float, val locationY: Float)
+        object GameDatabase {
+            val aircraftList = mutableListOf(
+                Aircraft("cessna172", "Cessna 172 Sky", "Small Propeller", 0, 140f, 1100f, 200f, 180f, 3, 45f, true),
+                Aircraft("kingair", "King Air 350", "Regional Turboprop", 45000, 310f, 4500f, 800f, 750f, 9, 75f, false),
+                Aircraft("citation", "Citation X", "Business Jet", 120000, 525f, 14500f, 2500f, 2200f, 12, 100f, false),
+                Aircraft("boeing737", "Boeing 737-800", "Passenger Jet", 350000, 480f, 41000f, 15000f, 8500f, 160, 115f, false)
+            )
+            val airportList = listOf(
+                Airport("Berlin Brandenburg", "BER", 1000f, 500f),
+                Airport("Frankfurt Main", "FRA", 3500f, 1200f),
+                Airport("Munich Airport", "MUC", 6000f, 2500f)
+            )
+        }
+        EOF
 
-        class MainActivity : AppCompatActivity() {
+        cat << 'EOF' > app/src/main/java/com/flypro/game/data/SaveManager.kt
+        package com.flypro.game.data
+        import android.content.Context
+        import android.content.SharedPreferences
+        class SaveManager(context: Context) {
+            private val prefs: SharedPreferences = context.getSharedPreferences("FlyProPrefs", Context.MODE_PRIVATE)
+            fun getMoney(): Int = prefs.getInt("money", 5000)
+            fun saveMoney(money: Int) = prefs.edit().putInt("money", money).apply()
+            fun getSelectedAircraftId(): String = prefs.getString("selected_aircraft", "cessna172") ?: "cessna172"
+            fun saveSelectedAircraftId(id: String) = prefs.edit().putString("selected_aircraft", id).apply()
+            fun isAircraftUnlocked(id: String): Boolean {
+                if (id == "cessna172") return true
+                return prefs.getBoolean("unlocked_$id", false)
+            }
+            fun unlockAircraft(id: String) = prefs.edit().putBoolean("unlocked_$id", true).apply()
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/physics/FlightPhysics.kt
+        package com.flypro.game.physics
+        class FlightPhysics(val aircraft: com.flypro.game.data.Aircraft) {
+            var posX = 0f
+            var posY = 1000f
+            var airspeed = 60f
+            var verticalSpeed = 0f
+            var pitch = 0f
+            var throttle = 50f
+            var flaps = 0
+            var gearDown = true
+            var fuel = aircraft.fuelCapacity
+            var engineTemp = 70f
+            var isStalled = false
+            var isOverspeed = false
+            var engineFailed = false
+            fun update(deltaTime: Float) {
+                if (fuel <= 0 || engineFailed) { throttle = 0f }
+                val thrust = (throttle / 100f) * aircraft.enginePower * 2.0f
+                val drag = (airspeed * airspeed * 0.005f) + (if (gearDown) 30f else 0f) + (flaps * 15f)
+                val acceleration = (thrust - drag) / (aircraft.weight * 0.001f)
+                airspeed += acceleration * deltaTime * 10f
+                if (airspeed < 0f) airspeed = 0f
+                isStalled = airspeed < aircraft.stallSpeed && posY > 50f
+                isOverspeed = airspeed > aircraft.maxSpeed
+                if (isStalled) { verticalSpeed = -800f; pitch = -15f }
+                else { verticalSpeed = (pitch * 20f) + ((airspeed - 50f) * 2f) }
+                posY += verticalSpeed * (deltaTime / 60f)
+                if (posY < 0f) { posY = 0f; verticalSpeed = 0f; pitch = 0f }
+                if (throttle > 0f) {
+                    fuel -= (throttle / 100f) * 0.5f * deltaTime
+                    if (fuel < 0f) fuel = 0f
+                    engineTemp = 70f + (throttle * 0.8f)
+                } else { engineTemp = maxOf(25f, engineTemp - 5f * deltaTime) }
+                posX += (airspeed * 1.5f) * deltaTime
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/components/CanvasElements.kt
+        package com.flypro.game.ui.components
+        import androidx.compose.foundation.Canvas
+        import androidx.compose.foundation.layout.fillMaxSize
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.geometry.Offset
+        import androidx.compose.ui.graphics.Color
+        import androidx.compose.ui.graphics.drawscope.rotate
+        @Composable
+        fun FlightWorldCanvas(posX: Float, posY: Float, pitch: Float) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(color = Color(0xFF1a237e))
+                val groundY = size.height * 0.6f
+                drawRect(color = Color(0xFF33691e), topLeft = Offset(0f, groundY), size = androidx.compose.ui.geometry.Size(size.width, size.height - groundY))
+                val center = Offset(size.width / 2f, groundY - (posY * 0.2f).coerceIn(0f, groundY - 100f))
+                rotate(pitch, pivot = center) {
+                    drawCircle(color = Color.Cyan, radius = 16f, center = center)
+                    drawRect(color = Color.White, topLeft = Offset(center.x - 30f, center.y - 4f), size = androidx.compose.ui.geometry.Size(60f, 8f))
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/MainMenuScreen.kt
+        package com.flypro.game.ui.screens
+        import androidx.compose.foundation.layout.*
+        import androidx.compose.material3.*
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.text.font.FontWeight
+        import androidx.compose.ui.unit.dp
+        import androidx.compose.ui.unit.sp
+        @Composable
+        fun MainMenuScreen(onPlayClick: () -> Unit, onHangarClick: () -> Unit, onSettingsClick: () -> Unit) {
+            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("FLYPRO", fontSize = 42.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("Advanced 2D Flight Simulator", fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                    Spacer(modifier = Modifier.height(32.dp))
+                    Button(onClick = onPlayClick, modifier = Modifier.width(240.dp).height(50.dp)) { Text("FLY NOW", fontSize = 18.sp) }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(onClick = onHangarClick, modifier = Modifier.width(240.dp).height(50.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("HANGAR / SHOP", fontSize = 18.sp) }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(onClick = onSettingsClick, modifier = Modifier.width(240.dp).height(50.dp)) { Text("SETTINGS", fontSize = 18.sp) }
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/HangarScreen.kt
+        package com.flypro.game.ui.screens
+        import androidx.compose.foundation.layout.*
+        import androidx.compose.foundation.lazy.LazyColumn
+        import androidx.compose.foundation.lazy.items
+        import androidx.compose.material3.*
+        import androidx.compose.runtime.*
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.unit.dp
+        import androidx.compose.ui.unit.sp
+        import com.flypro.game.data.GameDatabase
+        import com.flypro.game.data.SaveManager
+        @Composable
+        fun HangarScreen(saveManager: SaveManager, onBack: () -> Unit) {
+            var money by remember { mutableStateOf(saveManager.getMoney()) }
+            var selectedId by remember { mutableStateOf(saveManager.getSelectedAircraftId()) }
+            Surface(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = onBack) { Text("Back") }
+                        Text("Hangar & Aircraft Shop", fontSize = 20.sp)
+                        Text("Money: $money $", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(GameDatabase.aircraftList) { aircraft ->
+                            val isUnlocked = saveManager.isAircraftUnlocked(aircraft.id)
+                            val isSelected = selectedId == aircraft.id
+                            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(aircraft.name, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text("Type: ${aircraft.type} | Max Speed: ${aircraft.maxSpeed} kts")
+                                    Text("Engine Power: ${aircraft.enginePower} HP | Passengers: ${aircraft.passengerCapacity}")
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        if (isUnlocked) {
+                                            Button(onClick = { selectedId = aircraft.id; saveManager.saveSelectedAircraftId(aircraft.id) }, enabled = !isSelected) { Text(if (isSelected) "Selected" else "Select") }
+                                        } else {
+                                            Button(onClick = {
+                                                if (money >= aircraft.price) {
+                                                    money -= aircraft.price
+                                                    saveManager.saveMoney(money)
+                                                    saveManager.unlockAircraft(aircraft.id)
+                                                }
+                                            }) { Text("Buy (${aircraft.price} $)") }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/FlightSetupScreen.kt
+        package com.flypro.game.ui.screens
+        import androidx.compose.foundation.layout.*
+        import androidx.compose.material3.*
+        import androidx.compose.runtime.*
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.unit.dp
+        import androidx.compose.ui.unit.sp
+        import com.flypro.game.data.GameDatabase
+        @Composable
+        fun FlightSetupScreen(onStartFlight: (departure: String, destination: String) -> Unit, onBack: () -> Unit) {
+            val airports = GameDatabase.airportList
+            var departureIndex by remember { mutableStateOf(0) }
+            var destinationIndex by remember { mutableStateOf(1) }
+            Surface(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Flight Planning", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text("Departure: ${airports[departureIndex].name} (${airports[departureIndex].code})")
+                    Button(onClick = { departureIndex = (departureIndex + 1) % airports.size }) { Text("Change Departure") }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Destination: ${airports[destinationIndex].name} (${airports[destinationIndex].code})")
+                    Button(onClick = { destinationIndex = (destinationIndex + 1) % airports.size }) { Text("Change Destination") }
+                    Spacer(modifier = Modifier.height(32.dp))
+                    Button(onClick = { onStartFlight(airports[departureIndex].code, airports[destinationIndex].code) }, modifier = Modifier.width(200.dp).height(50.dp)) { Text("Start Engine & Fly") }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedButton(onClick = onBack) { Text("Back to Menu") }
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/GameScreen.kt
+        package com.flypro.game.ui.screens
+        import androidx.compose.foundation.layout.*
+        import androidx.compose.material3.*
+        import androidx.compose.runtime.*
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.graphics.Color
+        import androidx.compose.ui.unit.dp
+        import androidx.compose.ui.unit.sp
+        import com.flypro.game.data.GameDatabase
+        import com.flypro.game.data.SaveManager
+        import com.flypro.game.physics.FlightPhysics
+        import com.flypro.game.ui.components.FlightWorldCanvas
+        import kotlinx.coroutines.delay
+        @Composable
+        fun GameScreen(saveManager: SaveManager, departure: String, destination: String, onExit: () -> Unit) {
+            val aircraftId = saveManager.getSelectedAircraftId()
+            val aircraft = GameDatabase.aircraftList.find { it.id == aircraftId } ?: GameDatabase.aircraftList[0]
+            val physics = remember { FlightPhysics(aircraft) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(50L)
+                    physics.update(0.05f)
+                }
+            }
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.fillMaxWidth().weight(0.65f)) {
+                    FlightWorldCanvas(posX = physics.posX, posY = physics.posY, pitch = physics.pitch)
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("ROUTE: $departure ➔ $destination", color = Color.White, fontSize = 14.sp)
+                        Text("ALT: ${physics.posY.toInt()} FT", color = Color.Cyan, fontSize = 16.sp)
+                        Text("IAS: ${physics.airspeed.toInt()} KTS", color = Color.Cyan, fontSize = 16.sp)
+                        Text("DEST DISTANCE: ${(120 - (physics.posX / 100f)).coerceAtLeast(0f).toInt()} NM", color = Color.Green, fontSize = 14.sp)
+                        if (physics.isStalled) { Text("STALL WARNING!", color = Color.Red, fontSize = 20.sp) }
+                    }
+                    Button(onClick = onExit, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("Abort") }
+                }
+                Surface(modifier = Modifier.fillMaxWidth().weight(0.35f), color = Color(0xFF0F141D)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.SpaceAround) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Throttle: ${physics.throttle.toInt()}%", fontSize = 14.sp)
+                            Text("Pitch: ${physics.pitch.toInt()}°", fontSize = 14.sp)
+                            Text("Fuel: ${physics.fuel.toInt()} L", fontSize = 14.sp)
+                            Text("Flaps: ${physics.flaps}", fontSize = 14.sp)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Button(onClick = { if (physics.throttle < 100f) physics.throttle += 10f }) { Text("THR +") }
+                            Button(onClick = { if (physics.throttle > 0f) physics.throttle -= 10f }) { Text("THR -") }
+                            Button(onClick = { physics.pitch += 2f }) { Text("PITCH UP") }
+                            Button(onClick = { physics.pitch -= 2f }) { Text("PITCH DOWN") }
+                            Button(onClick = { physics.flaps = (physics.flaps + 1) % 3 }) { Text("FLAPS") }
+                        }
+                    }
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/ui/screens/SettingsScreen.kt
+        package com.flypro.game.ui.screens
+        import androidx.compose.foundation.layout.*
+        import androidx.compose.material3.*
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.Alignment
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.unit.dp
+        import androidx.compose.ui.unit.sp
+        @Composable
+        fun SettingsScreen(onBack: () -> Unit) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Settings", fontSize = 24.sp, color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text("Sound, Graphics & Controls options will be here.")
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(onClick = onBack) { Text("Back to Menu") }
+                }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/theme/Theme.kt
+        package com.flypro.game.theme
+        import androidx.compose.material3.MaterialTheme
+        import androidx.compose.material3.darkColorScheme
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.graphics.Color
+        private val DarkColorScheme = darkColorScheme(
+            primary = Color(0xFF00E5FF),
+            secondary = Color(0xFF2979FF),
+            background = Color(0xFF0A0E17),
+            surface = Color(0xFF121824),
+            onPrimary = Color.Black,
+            onSecondary = Color.White,
+            onBackground = Color.White,
+            onSurface = Color.White
+        )
+        @Composable
+        fun FlyProTheme(content: @Composable () -> Unit) {
+            MaterialTheme(colorScheme = DarkColorScheme, content = content)
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/FlyProApp.kt
+        package com.flypro.game
+        import androidx.compose.runtime.Composable
+        import androidx.compose.ui.platform.LocalContext
+        import androidx.navigation.compose.NavHost
+        import androidx.navigation.compose.composable
+        import androidx.navigation.compose.rememberNavController
+        import com.flypro.game.data.SaveManager
+        import com.flypro.game.ui.screens.*
+        @Composable
+        fun FlyProApp() {
+            val navController = rememberNavController()
+            val context = LocalContext.current
+            val saveManager = SaveManager(context)
+            NavHost(navController = navController, startDestination = "menu") {
+                composable("menu") {
+                    MainMenuScreen(
+                        onPlayClick = { navController.navigate("flight_setup") },
+                        onHangarClick = { navController.navigate("hangar") },
+                        onSettingsClick = { navController.navigate("settings") }
+                    )
+                }
+                composable("hangar") { HangarScreen(saveManager = saveManager, onBack = { navController.popBackStack() }) }
+                composable("flight_setup") {
+                    FlightSetupScreen(
+                        onStartFlight = { dep, dest -> navController.navigate("game/$dep/$dest") },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable("game/{departure}/{destination}") { backStackEntry ->
+                    val departure = backStackEntry.arguments?.getString("departure") ?: "BER"
+                    val destination = backStackEntry.arguments?.getString("destination") ?: "FRA"
+                    GameScreen(saveManager = saveManager, departure = departure, destination = destination, onExit = { navController.popBackStack("menu", inclusive = false) })
+                }
+                composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
+            }
+        }
+        EOF
+
+        cat << 'EOF' > app/src/main/java/com/flypro/game/MainActivity.kt
+        package com.flypro.game
+        import android.os.Bundle
+        import androidx.activity.ComponentActivity
+        import androidx.activity.compose.setContent
+        import com.flypro.game.theme.FlyProTheme
+        class MainActivity : ComponentActivity() {
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
-                val text = TextView(this)
-                text.text = "FlyPro Kesin Basarili!"
-                text.textSize = 24f
-                setContentView(text)
+                setContent {
+                    FlyProTheme { FlyProApp() }
+                }
             }
         }
         EOF
